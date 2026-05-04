@@ -16,11 +16,8 @@ export function renderNavbar(): void {
         <span>GoVap Travel</span>
       </a>
       <div class="navbar__links">
-        <a href="/" data-link>Lưu trú & trải nghiệm</a>
-        <a href="/explore" data-link>Khám phá địa điểm</a>
         <a href="/about" data-link>Về chúng tôi</a>
         ${user ? '<a href="/itinerary" data-link>Lịch trình của tôi</a>' : ""}
-        <a href="/chat" data-link>Trợ lý AI</a>
       </div>
       <div class="navbar__auth">
         ${

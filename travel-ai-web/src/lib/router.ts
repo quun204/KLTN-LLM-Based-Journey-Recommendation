@@ -19,12 +19,19 @@ function dispatch(path: string): void {
     return;
   }
 
-  // Prefix match (e.g. "/login" matches "/login?...")
+  // Prefix match (prefer the longest matching route so nested paths work)
+  let matchedHandler: RouteHandler | null = null;
+  let matchedLength = -1;
   for (const [key, handler] of routes) {
-    if (path.startsWith(key) && key !== "/") {
-      handler();
-      return;
+    if (key !== "/" && path.startsWith(key) && key.length > matchedLength) {
+      matchedHandler = handler;
+      matchedLength = key.length;
     }
+  }
+
+  if (matchedHandler) {
+    matchedHandler();
+    return;
   }
 
   // Fallback to "/"

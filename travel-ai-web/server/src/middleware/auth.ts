@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
-import { env } from "../config/env.js";
+import { authService } from "../services/auth-service.js";
 
 export interface JwtPayload {
   id: number;
@@ -25,13 +24,16 @@ export function requireAuth(
   }
 
   const token = header.slice(7);
-  try {
-    const payload = jwt.verify(token, env.jwtSecret) as JwtPayload;
-    req.user = payload;
+  void (async () => {
+    const user = await authService.getUserBySessionToken(token);
+    if (!user) {
+      res.status(401).json({ message: "Token không hợp lệ hoặc đã hết hạn." });
+      return;
+    }
+
+    req.user = { id: user.id, role: user.role };
     next();
-  } catch {
-    res.status(401).json({ message: "Token không hợp lệ hoặc đã hết hạn." });
-  }
+  })();
 }
 
 export function requireRole(...roles: string[]) {
@@ -52,12 +54,11 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction): 
   }
 
   const token = header.slice(7);
-  try {
-    const payload = jwt.verify(token, env.jwtSecret) as JwtPayload;
-    req.user = payload;
-  } catch {
-    // Ignore invalid token in optional mode and continue as anonymous.
-  }
-
-  next();
+  void (async () => {
+    const user = await authService.getUserBySessionToken(token);
+    if (user) {
+      req.user = { id: user.id, role: user.role };
+    }
+    next();
+  })();
 }

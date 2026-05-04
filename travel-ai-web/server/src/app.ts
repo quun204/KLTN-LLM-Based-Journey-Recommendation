@@ -7,6 +7,8 @@ import { locationsRouter } from "./routes/locations.js";
 import { chatRouter } from "./routes/chat.js";
 import { authRouter } from "./routes/auth.js";
 import { itineraryRouter } from "./routes/itinerary.js";
+import { userPrefRouter } from "./routes/user-preferences.js";
+import { favoriteRouter } from "./routes/favorites.js";
 
 export function createApp() {
   const app = express();
@@ -21,8 +23,10 @@ export function createApp() {
 
   app.use("/api/auth", authRouter);
   app.use("/api/itinerary", itineraryRouter);
+  app.use("/api/favorites", favoriteRouter);
   app.use("/api/locations", locationsRouter);
   app.use("/api/chat", chatRouter);
+  app.use("/api/user", userPrefRouter);
 
   if (existsSync(clientDistPath)) {
     app.use(express.static(clientDistPath));

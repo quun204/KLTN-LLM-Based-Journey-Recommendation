@@ -1,8 +1,8 @@
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import sql from "mssql";
+import { randomBytes } from "node:crypto";
+import mongoose, { Schema, Document } from "mongoose";
 
-import { getDbPool } from "../config/database.js";
+import { connectMongoDB, getMongoose } from "../config/database.js";
 import { env } from "../config/env.js";
 
 export interface UserRow {
@@ -28,6 +28,15 @@ export interface AuthResult {
   token: string;
 }
 
+interface SessionRow {
+  token: string;
+  userId: number;
+  role: string;
+  isActive: boolean;
+  expiresAt: Date;
+  lastUsedAt: Date;
+}
+
 interface RegisterPreferences {
   favoriteCategories?: string[];
   budgetPerTrip?: number | null;
@@ -35,18 +44,65 @@ interface RegisterPreferences {
   tripStyle?: string;
 }
 
-// Mock users chạy khi USE_MOCK_DATA=true
-const mockUsers: UserRow[] = [
+// MongoDB User Schema
+const userSchema = new Schema<UserRow & Document>(
   {
-    nguoi_dung_id: 1,
-    ten_dang_nhap: "admin",
-    email: "admin@dulichdb.vn",
-    mat_khau_bam: bcrypt.hashSync("Admin@123", 10),
-    ho_ten: "Quản trị viên",
-    vai_tro: "admin",
-    trang_thai: "active"
+    nguoi_dung_id: { type: Number, required: true, unique: true, index: true },
+    ten_dang_nhap: { type: String, required: true, unique: true, index: true },
+    email: { type: String, required: true, unique: true, index: true },
+    mat_khau_bam: { type: String, required: true },
+    ho_ten: String,
+    vai_tro: { type: String, default: "user" },
+    trang_thai: { type: String, default: "active" }
+  },
+  { collection: "nguoidung" }
+);
+
+const sessionSchema = new Schema<SessionRow & Document>(
+  {
+    token: { type: String, required: true, unique: true, index: true },
+    userId: { type: Number, required: true, index: true },
+    role: { type: String, required: true },
+    isActive: { type: Boolean, default: true, index: true },
+    expiresAt: { type: Date, required: true, index: true },
+    lastUsedAt: { type: Date, required: true }
+  },
+  { collection: "phien_dang_nhap" }
+);
+
+let UserModel: mongoose.Model<UserRow & Document> | null = null;
+let SessionModel: mongoose.Model<SessionRow & Document> | null = null;
+
+async function getUserModel() {
+  if (!UserModel) {
+    await connectMongoDB();
+    const db = getMongoose();
+    UserModel = db.model<UserRow & Document>("NguoiDung", userSchema, "nguoidung");
   }
-];
+  return UserModel;
+}
+
+async function getSessionModel() {
+  if (!SessionModel) {
+    await connectMongoDB();
+    const db = getMongoose();
+    SessionModel = db.model<SessionRow & Document>("PhienDangNhap", sessionSchema, "phien_dang_nhap");
+  }
+  return SessionModel;
+}
+
+function parseExpiryToMs(raw: string): number {
+  const trimmed = raw.trim().toLowerCase();
+  const match = trimmed.match(/^(\d+)([smhd])$/);
+  if (!match) {
+    return 7 * 24 * 60 * 60 * 1000;
+  }
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+  const factor = unit === "s" ? 1000 : unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : 86_400_000;
+  return amount * factor;
+}
 
 export class AuthService {
   async register(data: {
@@ -58,65 +114,50 @@ export class AuthService {
   }): Promise<AuthResult> {
     const hashedPassword = await bcrypt.hash(data.password, 12);
 
-    if (env.useMockData) {
-      const existing = mockUsers.find(
-        (u) => u.ten_dang_nhap === data.username || u.email === data.email
-      );
+    try {
+      const User = await getUserModel();
+
+      // Check if user already exists
+      const existing = await User.findOne({
+        $or: [{ ten_dang_nhap: data.username }, { email: data.email }]
+      });
+
       if (existing) {
         throw new Error("Tên đăng nhập hoặc email đã tồn tại.");
       }
 
-      const newUser: UserRow = {
-        nguoi_dung_id: mockUsers.length + 1,
+      // Get next user ID
+      const lastUser = await User.findOne().sort({ nguoi_dung_id: -1 });
+      const nextId = (lastUser?.nguoi_dung_id || 0) + 1;
+
+      // Create new user
+      const newUser = new User({
+        nguoi_dung_id: nextId,
         ten_dang_nhap: data.username,
         email: data.email,
         mat_khau_bam: hashedPassword,
         ho_ten: data.fullName,
         vai_tro: "user",
         trang_thai: "active"
+      });
+
+      const saved = await newUser.save();
+      
+      // Convert MongoDB doc to UserRow
+      const userRow: UserRow = {
+        nguoi_dung_id: saved.nguoi_dung_id,
+        ten_dang_nhap: saved.ten_dang_nhap,
+        email: saved.email,
+        mat_khau_bam: saved.mat_khau_bam,
+        ho_ten: saved.ho_ten || "",
+        vai_tro: saved.vai_tro,
+        trang_thai: saved.trang_thai
       };
-      mockUsers.push(newUser);
-      return this.buildResult(newUser);
+
+      return this.buildResult(userRow);
+    } catch (error) {
+      throw error;
     }
-
-    const pool = await getDbPool();
-    const check = await pool
-      .request()
-      .input("username", sql.NVarChar(100), data.username)
-      .input("email", sql.NVarChar(255), data.email).query(`
-        SELECT 1 FROM dbo.NguoiDung
-        WHERE [ten_dang_nhap] = @username OR [email] = @email
-      `);
-
-    if (check.recordset.length > 0) {
-      throw new Error("Tên đăng nhập hoặc email đã tồn tại.");
-    }
-
-    const insert = await pool
-      .request()
-      .input("username", sql.NVarChar(100), data.username)
-      .input("email", sql.NVarChar(255), data.email)
-      .input("hash", sql.NVarChar(255), hashedPassword)
-      .input("fullName", sql.NVarChar(255), data.fullName).query(`
-        INSERT INTO dbo.NguoiDung
-          ([ten_dang_nhap],[email],[mat_khau_bam],[ho_ten],[vai_tro],[trang_thai],[da_xac_thuc_email])
-        OUTPUT INSERTED.*
-        VALUES (@username, @email, @hash, @fullName, N'user', N'active', 0);
-      `);
-
-    const row = insert.recordset[0] as UserRow;
-
-    // Tạo hồ sơ người dùng
-    await pool
-      .request()
-      .input("userId", sql.Int, row.nguoi_dung_id)
-      .query(
-        `INSERT INTO dbo.HoSoNguoiDung ([nguoi_dung_id]) VALUES (@userId)`
-      );
-
-    await this.saveUserPreferences(row.nguoi_dung_id, data.preferences);
-
-    return this.buildResult(row);
   }
 
   async login(data: {
@@ -138,156 +179,98 @@ export class AuthService {
       throw new Error("Tên đăng nhập hoặc mật khẩu không đúng.");
     }
 
-    if (!env.useMockData) {
-      const pool = await getDbPool();
-      await pool
-        .request()
-        .input("userId", sql.Int, user.nguoi_dung_id)
-        .query(
-          `UPDATE dbo.NguoiDung SET [dang_nhap_cuoi] = SYSUTCDATETIME() WHERE [nguoi_dung_id] = @userId`
-        );
-    }
-
     return this.buildResult(user);
   }
 
   async getUserById(id: number): Promise<AuthUser | null> {
-    if (env.useMockData) {
-      const u = mockUsers.find((m) => m.nguoi_dung_id === id);
-      return u ? this.toAuthUser(u) : null;
+    const user = await this.findByUserId(id);
+    return user ? this.toAuthUser(user) : null;
+  }
+
+  async getUserBySessionToken(token: string): Promise<AuthUser | null> {
+    try {
+      const Session = await getSessionModel();
+      const now = new Date();
+      const session = await Session.findOne({
+        token,
+        isActive: true,
+        expiresAt: { $gt: now }
+      }).lean();
+
+      if (!session) {
+        return null;
+      }
+
+      await Session.updateOne({ token: session.token }, { $set: { lastUsedAt: now } });
+
+      const user = await this.findByUserId(session.userId);
+      return user ? this.toAuthUser(user) : null;
+    } catch {
+      return null;
     }
-
-    const pool = await getDbPool();
-    const result = await pool
-      .request()
-      .input("id", sql.Int, id).query<UserRow>(
-        `SELECT [nguoi_dung_id],[ten_dang_nhap],[email],[mat_khau_bam],[ho_ten],[vai_tro],[trang_thai]
-         FROM dbo.NguoiDung WHERE [nguoi_dung_id] = @id`
-      );
-
-    if (result.recordset.length === 0) return null;
-    return this.toAuthUser(result.recordset[0]);
   }
 
   private async findByUsername(username: string): Promise<UserRow | null> {
-    if (env.useMockData) {
-      return (
-        mockUsers.find(
-          (u) => u.ten_dang_nhap === username || u.email === username
-        ) ?? null
-      );
+    try {
+      const User = await getUserModel();
+      const doc = await User.findOne({
+        $or: [{ ten_dang_nhap: username }, { email: username }]
+      }).lean();
+
+      if (!doc) return null;
+
+      return {
+        nguoi_dung_id: doc.nguoi_dung_id,
+        ten_dang_nhap: doc.ten_dang_nhap,
+        email: doc.email,
+        mat_khau_bam: doc.mat_khau_bam,
+        ho_ten: doc.ho_ten || "",
+        vai_tro: doc.vai_tro,
+        trang_thai: doc.trang_thai
+      };
+    } catch {
+      return null;
     }
-
-    const pool = await getDbPool();
-    const result = await pool
-      .request()
-      .input("u", sql.NVarChar(255), username).query<UserRow>(`
-        SELECT [nguoi_dung_id],[ten_dang_nhap],[email],[mat_khau_bam],[ho_ten],[vai_tro],[trang_thai]
-        FROM dbo.NguoiDung
-        WHERE [ten_dang_nhap] = @u OR [email] = @u
-      `);
-
-    return result.recordset[0] ?? null;
   }
 
-  private buildResult(user: UserRow): AuthResult {
+  private async findByUserId(id: number): Promise<UserRow | null> {
+    try {
+      const User = await getUserModel();
+      const doc = await User.findOne({ nguoi_dung_id: id }).lean();
+
+      if (!doc) return null;
+
+      return {
+        nguoi_dung_id: doc.nguoi_dung_id,
+        ten_dang_nhap: doc.ten_dang_nhap,
+        email: doc.email,
+        mat_khau_bam: doc.mat_khau_bam,
+        ho_ten: doc.ho_ten || "",
+        vai_tro: doc.vai_tro,
+        trang_thai: doc.trang_thai
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async buildResult(user: UserRow): Promise<AuthResult> {
     const authUser = this.toAuthUser(user);
-    const token = jwt.sign(
-      { id: authUser.id, role: authUser.role },
-      env.jwtSecret,
-      { expiresIn: env.jwtExpiresIn } as jwt.SignOptions
-    );
+    const Session = await getSessionModel();
+    const now = new Date();
+    const token = randomBytes(48).toString("hex");
+    const expiresAt = new Date(now.getTime() + parseExpiryToMs(env.jwtExpiresIn));
+
+    await Session.create({
+      token,
+      userId: authUser.id,
+      role: authUser.role,
+      isActive: true,
+      expiresAt,
+      lastUsedAt: now
+    });
+
     return { user: authUser, token };
-  }
-
-  private async saveUserPreferences(userId: number, preferences?: RegisterPreferences): Promise<void> {
-    if (!preferences) {
-      return;
-    }
-
-    const pool = await getDbPool();
-
-    const profileNotes = [
-      preferences.foodPreferences ? `Do an ua thich: ${preferences.foodPreferences}` : null,
-      preferences.tripStyle ? `Phong cach du lich: ${preferences.tripStyle}` : null
-    ]
-      .filter(Boolean)
-      .join(" | ");
-
-    if (profileNotes) {
-      await pool
-        .request()
-        .input("userId", sql.Int, userId)
-        .input("bio", sql.NVarChar(500), profileNotes)
-        .query(`
-          UPDATE dbo.HoSoNguoiDung
-          SET [gioi_thieu] = @bio, [ngay_cap_nhat] = SYSUTCDATETIME()
-          WHERE [nguoi_dung_id] = @userId;
-        `);
-    }
-
-    if (typeof preferences.budgetPerTrip === "number" && Number.isFinite(preferences.budgetPerTrip) && preferences.budgetPerTrip > 0) {
-      await pool
-        .request()
-        .input("userId", sql.Int, userId)
-        .input("value", sql.NVarChar(255), String(Math.round(preferences.budgetPerTrip)))
-        .input("score", sql.Int, 8)
-        .query(`
-          INSERT INTO dbo.SoThichNguoiDung ([nguoi_dung_id], [danh_muc_id], [loai_so_thich], [gia_tri_so_thich], [diem_uu_tien])
-          VALUES (@userId, NULL, N'price_range', @value, @score);
-        `);
-    }
-
-    if (preferences.foodPreferences && preferences.foodPreferences.trim()) {
-      await pool
-        .request()
-        .input("userId", sql.Int, userId)
-        .input("value", sql.NVarChar(255), preferences.foodPreferences.trim())
-        .input("score", sql.Int, 7)
-        .query(`
-          INSERT INTO dbo.SoThichNguoiDung ([nguoi_dung_id], [danh_muc_id], [loai_so_thich], [gia_tri_so_thich], [diem_uu_tien])
-          VALUES (@userId, NULL, N'favorite_service', @value, @score);
-        `);
-    }
-
-    if (preferences.tripStyle && preferences.tripStyle.trim()) {
-      await pool
-        .request()
-        .input("userId", sql.Int, userId)
-        .input("value", sql.NVarChar(255), preferences.tripStyle.trim())
-        .input("score", sql.Int, 6)
-        .query(`
-          INSERT INTO dbo.SoThichNguoiDung ([nguoi_dung_id], [danh_muc_id], [loai_so_thich], [gia_tri_so_thich], [diem_uu_tien])
-          VALUES (@userId, NULL, N'trip_duration', @value, @score);
-        `);
-    }
-
-    if (preferences.favoriteCategories && preferences.favoriteCategories.length > 0) {
-      for (const code of preferences.favoriteCategories) {
-        const categoryQuery = await pool
-          .request()
-          .input("code", sql.NVarChar(50), code)
-          .query<{ danh_muc_id: number }>(`
-            SELECT TOP 1 [danh_muc_id] FROM dbo.DanhMuc WHERE [ma_danh_muc] = @code;
-          `);
-
-        const categoryId = categoryQuery.recordset[0]?.danh_muc_id;
-        if (!categoryId) {
-          continue;
-        }
-
-        await pool
-          .request()
-          .input("userId", sql.Int, userId)
-          .input("categoryId", sql.Int, categoryId)
-          .input("value", sql.NVarChar(255), code)
-          .input("score", sql.Int, 9)
-          .query(`
-            INSERT INTO dbo.SoThichNguoiDung ([nguoi_dung_id], [danh_muc_id], [loai_so_thich], [gia_tri_so_thich], [diem_uu_tien])
-            VALUES (@userId, @categoryId, N'favorite_category', @value, @score);
-          `);
-      }
-    }
   }
 
   private toAuthUser(row: UserRow): AuthUser {

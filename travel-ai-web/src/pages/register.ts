@@ -41,42 +41,7 @@ export function renderRegisterPage(container: HTMLElement): void {
             <input id="confirm" name="confirm" type="password" placeholder="Nhập lại mật khẩu" autocomplete="new-password" required />
           </div>
 
-          <div class="form-group">
-            <label>Danh mục bạn thích (chọn nhiều)</label>
-            <div class="pref-grid">
-              <label class="pref-check"><input type="checkbox" name="favoriteCategories" value="khach-san" /> Khách sạn</label>
-              <label class="pref-check"><input type="checkbox" name="favoriteCategories" value="quan-an" /> Quán ăn</label>
-              <label class="pref-check"><input type="checkbox" name="favoriteCategories" value="coffee" /> Cà phê</label>
-              <label class="pref-check"><input type="checkbox" name="favoriteCategories" value="cong-vien" /> Công viên</label>
-              <label class="pref-check"><input type="checkbox" name="favoriteCategories" value="cho" /> Chợ</label>
-              <label class="pref-check"><input type="checkbox" name="favoriteCategories" value="karaoke" /> Karaoke</label>
-              <label class="pref-check"><input type="checkbox" name="favoriteCategories" value="chua" /> Chùa</label>
-              <label class="pref-check"><input type="checkbox" name="favoriteCategories" value="nha-tho" /> Nhà thờ</label>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="budgetPerTrip">Ngân sách mỗi chuyến (VND)</label>
-            <input id="budgetPerTrip" name="budgetPerTrip" type="number" min="50000" step="50000" placeholder="Ví dụ: 1500000" />
-          </div>
-
-          <div class="form-group">
-            <label for="foodPreferences">Bạn thích đồ ăn như nào?</label>
-            <input id="foodPreferences" name="foodPreferences" type="text" placeholder="Ví dụ: hải sản, lẩu nướng, đồ chay..." />
-          </div>
-
-          <div class="form-group">
-            <label for="tripStyle">Phong cách du lịch</label>
-            <select id="tripStyle" name="tripStyle">
-              <option value="">-- Chọn phong cách --</option>
-              <option value="gia-dinh">Gia đình</option>
-              <option value="cap-doi">Cặp đôi</option>
-              <option value="mot-minh">Một mình</option>
-              <option value="ban-be">Bạn bè</option>
-              <option value="thu-gian">Thư giãn nhẹ nhàng</option>
-              <option value="kham-pha">Khám phá nhiều điểm</option>
-            </select>
-          </div>
+          <!-- Preference fields moved to post-registration questionnaire -->
           <p class="form-error" id="register-error" hidden></p>
           <button class="btn btn-primary btn-block" type="submit" id="register-btn">Đăng ký</button>
         </form>
@@ -125,26 +90,17 @@ export function renderRegisterPage(container: HTMLElement): void {
     btn.textContent = "Đang xử lý…";
 
     try {
-      const favoriteCategories = form
-        .querySelectorAll<HTMLInputElement>('input[name="favoriteCategories"]:checked');
-
       const result = await apiRegister({
         username: (data.get("username") as string).trim(),
         email: (data.get("email") as string).trim(),
         password,
         fullName: (data.get("fullName") as string).trim(),
-        preferences: {
-          favoriteCategories: Array.from(favoriteCategories).map((item) => item.value),
-          budgetPerTrip: data.get("budgetPerTrip")
-            ? Number(data.get("budgetPerTrip"))
-            : null,
-          foodPreferences: (data.get("foodPreferences") as string).trim(),
-          tripStyle: (data.get("tripStyle") as string).trim()
-        }
+        preferences: {} // preferences will be collected after signup
       });
       setAuth(result.user, result.token);
       renderNavbar();
-      navigate("/");
+      // After successful signup, go to the questionnaire to collect preferences
+      navigate("/user-questions");
     } catch (err) {
       errorEl.textContent =
         err instanceof Error ? err.message : "Đăng ký thất bại.";

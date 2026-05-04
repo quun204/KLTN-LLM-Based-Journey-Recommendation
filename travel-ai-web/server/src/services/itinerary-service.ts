@@ -1,47 +1,43 @@
-import sql from "mssql";
-
-import { getDbPool } from "../config/database.js";
-import { env } from "../config/env.js";
 import type { LocationRecord } from "../types/domain.js";
 import { locationService } from "./location-service.js";
+import mongoose from "mongoose";
+
+const itinerarySchema = new mongoose.Schema(
+  {
+    itinerary_id: { type: Number, required: true, unique: true },
+    title: { type: String, required: true },
+    description: { type: String },
+    items: [
+      {
+        type: mongoose.Schema.Types.Mixed
+      }
+    ],
+    totalDuration: { type: String },
+    difficulty: { type: String },
+    bestFor: { type: String },
+    tenNguoiDung: { type: String },
+    featured: { type: Boolean, default: false },
+    rating: { type: Number, default: 0 },
+    createdAt: { type: Date, default: Date.now }
+  },
+  { collection: "lichsuyeuthich" }
+);
+
+const Itinerary = mongoose.model("Itinerary", itinerarySchema);
 
 class ItineraryService {
-  private readonly memoryPlans = new Map<number, number[]>();
+  private readonly memoryPlans = new Map<number, Array<{ locationId: number; startTime?: string; endTime?: string }>>();
 
   async listLocations(userId: number): Promise<LocationRecord[]> {
-    if (env.useMockData) {
-      return this.listFromMemory(userId);
-    }
-
-    try {
-      return await this.listFromDb(userId);
-    } catch {
-      return this.listFromMemory(userId);
-    }
+    return this.listFromMemory(userId);
   }
 
-  async addLocation(userId: number, locationId: number): Promise<LocationRecord[]> {
-    if (env.useMockData) {
-      return this.addToMemory(userId, locationId);
-    }
-
-    try {
-      return await this.addToDb(userId, locationId);
-    } catch {
-      return this.addToMemory(userId, locationId);
-    }
+  async addLocation(userId: number, locationId: number, when?: { startTime?: string; endTime?: string }): Promise<LocationRecord[]> {
+    return this.addToMemory(userId, locationId, when);
   }
 
   async removeLocation(userId: number, locationId: number): Promise<LocationRecord[]> {
-    if (env.useMockData) {
-      return this.removeFromMemory(userId, locationId);
-    }
-
-    try {
-      return await this.removeFromDb(userId, locationId);
-    } catch {
-      return this.removeFromMemory(userId, locationId);
-    }
+    return this.removeFromMemory(userId, locationId);
   }
 
   async getPreferredHotel(userId: number): Promise<LocationRecord | null> {
@@ -49,11 +45,93 @@ class ItineraryService {
     return items.find((item) => item.categoryCode === "khach-san") ?? null;
   }
 
-  private async addToMemory(userId: number, locationId: number): Promise<LocationRecord[]> {
+  async getFeaturedItineraries(limit: number = 15): Promise<any[]> {
+    try {
+      const itineraries = await Itinerary.find({})
+        .sort({ featured: -1, rating: -1, itinerary_id: 1 })
+        .limit(limit)
+        .lean();
+      return itineraries || [];
+    } catch (error) {
+      console.error("Error fetching featured itineraries:", error);
+      return [];
+    }
+  }
+
+  async getItineraryById(id: string): Promise<any> {
+    try {
+      const numericId = Number(id);
+      const itinerary = Number.isFinite(numericId)
+        ? await Itinerary.findOne({ itinerary_id: numericId }).lean()
+        : await Itinerary.findById(id).lean();
+      return itinerary || null;
+    } catch (error) {
+      console.error("Error fetching itinerary by id:", error);
+      return null;
+    }
+  }
+
+  async listItinerariesByUsername(username: string, limit: number = 50): Promise<any[]> {
+    try {
+      const itineraries = await Itinerary.find({ tenNguoiDung: username })
+        .sort({ createdAt: -1, itinerary_id: -1 })
+        .limit(limit)
+        .lean();
+      return itineraries || [];
+    } catch (error) {
+      console.error("Error listing itineraries by username:", error);
+      return [];
+    }
+  }
+
+  async createPersonalItinerary(data: {
+    title: string;
+    description?: string;
+    items: any[];
+    totalDuration?: string;
+    tenNguoiDung: string;
+  }): Promise<any> {
+    const nextId = await this.getNextItineraryId();
+    const created = await Itinerary.create({
+      itinerary_id: nextId,
+      title: data.title,
+      description: data.description ?? "Hành trình cá nhân do người dùng tự tạo.",
+      items: data.items,
+      totalDuration: data.totalDuration ?? "Tùy chỉnh",
+      difficulty: "Tự tạo",
+      bestFor: "Cá nhân",
+      tenNguoiDung: data.tenNguoiDung,
+      featured: false,
+      rating: 0,
+      createdAt: new Date()
+    });
+    return created.toObject();
+  }
+
+  async deletePersonalItineraryForUsername(id: string, username: string): Promise<boolean> {
+    const numericId = Number(id);
+    const filter = Number.isFinite(numericId)
+      ? { itinerary_id: numericId, tenNguoiDung: username }
+      : { _id: id, tenNguoiDung: username };
+    const result = await Itinerary.deleteOne(filter as any);
+    return result.deletedCount > 0;
+  }
+
+  private async getNextItineraryId(): Promise<number> {
+    const last = await Itinerary.findOne({}).sort({ itinerary_id: -1 }).lean();
+    return (last?.itinerary_id ?? 0) + 1;
+  }
+
+  private async addToMemory(userId: number, locationId: number, when?: { startTime?: string; endTime?: string }): Promise<LocationRecord[]> {
     const current = this.memoryPlans.get(userId) ?? [];
-    if (!current.includes(locationId)) {
-      current.push(locationId);
+    const exists = current.find((c) => c.locationId === locationId);
+    if (!exists) {
+      current.push({ locationId, startTime: when?.startTime, endTime: when?.endTime });
       this.memoryPlans.set(userId, current);
+    } else {
+      // update times if provided
+      if (when?.startTime) exists.startTime = when.startTime;
+      if (when?.endTime) exists.endTime = when.endTime;
     }
 
     return this.listFromMemory(userId);
@@ -63,124 +141,23 @@ class ItineraryService {
     const current = this.memoryPlans.get(userId) ?? [];
     this.memoryPlans.set(
       userId,
-      current.filter((id) => id !== locationId)
+      current.filter((entry) => entry.locationId !== locationId)
     );
 
     return this.listFromMemory(userId);
   }
 
   private async listFromMemory(userId: number): Promise<LocationRecord[]> {
-    const ids = this.memoryPlans.get(userId) ?? [];
-    const records = await Promise.all(ids.map((id) => locationService.getLocationById(id)));
+    const entries = this.memoryPlans.get(userId) ?? [];
+    const records = await Promise.all(
+      entries.map(async (entry) => {
+        const loc = await locationService.getLocationById(entry.locationId);
+        if (!loc) return null;
+        // attach time metadata onto returned object
+        return { ...loc, itineraryStart: entry.startTime ?? null, itineraryEnd: entry.endTime ?? null } as LocationRecord;
+      })
+    );
     return records.filter((item): item is LocationRecord => item !== null);
-  }
-
-  private async addToDb(userId: number, locationId: number): Promise<LocationRecord[]> {
-    const itineraryId = await this.getOrCreateItineraryId(userId);
-    const pool = await getDbPool();
-    const request = pool.request();
-    request.input("itineraryId", sql.Int, itineraryId);
-    request.input("locationId", sql.Int, locationId);
-
-    await request.query(`
-      IF NOT EXISTS (
-        SELECT 1
-        FROM dbo.ChiTietLichTrinh
-        WHERE [lich_trinh_id] = @itineraryId AND [dia_diem_id] = @locationId
-      )
-      BEGIN
-        DECLARE @nextOrder INT = ISNULL(
-          (SELECT MAX([thu_tu_tham_quan]) + 1 FROM dbo.ChiTietLichTrinh WHERE [lich_trinh_id] = @itineraryId),
-          1
-        );
-
-        INSERT INTO dbo.ChiTietLichTrinh ([lich_trinh_id], [dia_diem_id], [ngay_thu], [thu_tu_tham_quan])
-        VALUES (@itineraryId, @locationId, 1, @nextOrder);
-      END
-    `);
-
-    return this.listFromDb(userId);
-  }
-
-  private async removeFromDb(userId: number, locationId: number): Promise<LocationRecord[]> {
-    const itineraryId = await this.getOrCreateItineraryId(userId);
-    const pool = await getDbPool();
-    const request = pool.request();
-    request.input("itineraryId", sql.Int, itineraryId);
-    request.input("locationId", sql.Int, locationId);
-
-    await request.query(`
-      DELETE FROM dbo.ChiTietLichTrinh
-      WHERE [lich_trinh_id] = @itineraryId AND [dia_diem_id] = @locationId;
-    `);
-
-    return this.listFromDb(userId);
-  }
-
-  private async listFromDb(userId: number): Promise<LocationRecord[]> {
-    const itineraryId = await this.getOrCreateItineraryId(userId);
-    const pool = await getDbPool();
-    const request = pool.request();
-    request.input("itineraryId", sql.Int, itineraryId);
-
-    const result = await request.query<LocationRecord>(`
-      SELECT
-        d.[dia_diem_id] AS id,
-        d.[ten_dia_diem] AS name,
-        c.[ma_danh_muc] AS categoryCode,
-        c.[ten_danh_muc] AS categoryName,
-        d.[dia_chi] AS address,
-        d.[quan_huyen] AS district,
-        d.[mo_ta] AS description,
-        d.[anh_dai_dien] AS imageUrl,
-        d.[dien_thoai] AS phone,
-        d.[website] AS website,
-        ISNULL(d.[diem_trung_binh], 0) AS rating,
-        ISNULL(d.[tong_danh_gia], 0) AS totalReviews,
-        d.[vi_do] AS latitude,
-        d.[kinh_do] AS longitude,
-        CAST(ISNULL(d.[noi_bat], 0) AS bit) AS featured,
-        CASE
-          WHEN p.[gia_trung_binh] IS NULL THEN NULL
-          ELSE CONCAT(FORMAT(p.[gia_trung_binh], 'N0'), N' VND')
-        END AS priceLabel,
-        p.[gia_trung_binh] AS avgPriceVnd,
-        d.[trang_thai] AS status
-      FROM dbo.ChiTietLichTrinh i
-      INNER JOIN dbo.DiaDiem d ON d.[dia_diem_id] = i.[dia_diem_id]
-      INNER JOIN dbo.DanhMuc c ON c.[danh_muc_id] = d.[danh_muc_id]
-      LEFT JOIN dbo.ThongTinGia p ON p.[dia_diem_id] = d.[dia_diem_id]
-      WHERE i.[lich_trinh_id] = @itineraryId
-      ORDER BY i.[thu_tu_tham_quan] ASC;
-    `);
-
-    return result.recordset;
-  }
-
-  private async getOrCreateItineraryId(userId: number): Promise<number> {
-    const pool = await getDbPool();
-    const request = pool.request();
-    request.input("userId", sql.Int, userId);
-
-    const existing = await request.query<{ itineraryId: number }>(`
-      SELECT TOP 1 [lich_trinh_id] AS itineraryId
-      FROM dbo.LichTrinh
-      WHERE [nguoi_dung_id] = @userId
-      ORDER BY [ngay_tao] ASC;
-    `);
-
-    const found = existing.recordset[0]?.itineraryId;
-    if (found) {
-      return found;
-    }
-
-    const created = await request.query<{ itineraryId: number }>(`
-      INSERT INTO dbo.LichTrinh ([nguoi_dung_id], [tieu_de], [mo_ta], [cong_khai])
-      VALUES (@userId, N'Hanh trinh mac dinh', N'Hanh trinh duoc tao tu thao tac luu nhanh tren web', 0);
-      SELECT CAST(SCOPE_IDENTITY() AS INT) AS itineraryId;
-    `);
-
-    return created.recordset[0].itineraryId;
   }
 }
 

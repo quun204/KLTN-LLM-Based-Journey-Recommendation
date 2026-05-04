@@ -1,11 +1,44 @@
-import sql from "mssql";
+import mongoose, { Schema, Document } from "mongoose";
 
-import { getDbPool } from "../config/database.js";
+import { connectMongoDB, getMongoose } from "../config/database.js";
 import { env } from "../config/env.js";
 import type { LocationRecord } from "../types/domain.js";
-import mockLocationsData from "../data/mock-locations.json" with { type: "json" };
 
-const mockLocations: LocationRecord[] = mockLocationsData as LocationRecord[];
+// Empty mock locations array - all data comes from MongoDB now
+const mockLocations: LocationRecord[] = [];
+
+// MongoDB Schema for Location
+const locationSchema = new Schema<LocationRecord & Document>({
+  id: { type: Number, required: true, index: true },
+  name: { type: String, required: true, index: true },
+  categoryCode: { type: String, required: true, index: true },
+  categoryName: String,
+  address: { type: String, required: true, index: true },
+  district: String,
+  description: String,
+  imageUrl: String,
+  phone: String,
+  website: String,
+  rating: { type: Number, default: 0, index: true },
+  totalReviews: { type: Number, default: 0 },
+  latitude: Number,
+  longitude: Number,
+  featured: { type: Boolean, default: false, index: true },
+  priceLabel: String,
+  avgPriceVnd: Number,
+  status: String
+}, { collection: "diadiem" });
+
+let LocationModel: mongoose.Model<LocationRecord & Document> | null = null;
+
+async function getLocationModel() {
+  if (!LocationModel) {
+    await connectMongoDB();
+    const db = getMongoose();
+    LocationModel = db.model<LocationRecord & Document>("Location", locationSchema, "diadiem");
+  }
+  return LocationModel;
+}
 
 interface AreaPreference {
   ward: string | null;
@@ -149,51 +182,34 @@ export class LocationService {
     category?: string;
     search?: string;
   }): Promise<LocationRecord[]> {
-    const pool = await getDbPool();
-    const request = pool.request();
-    request.input("limit", sql.Int, filters.limit ?? 1000);
-    request.input("category", sql.NVarChar(50), filters.category ?? null);
-    request.input("search", sql.NVarChar(255), filters.search ? `%${filters.search}%` : null);
-
-    const result = await request.query<LocationRecord>(`
-      SELECT TOP (@limit)
-        d.[dia_diem_id] AS id,
-        d.[ten_dia_diem] AS name,
-        c.[ma_danh_muc] AS categoryCode,
-        c.[ten_danh_muc] AS categoryName,
-        d.[dia_chi] AS address,
-        d.[quan_huyen] AS district,
-        d.[mo_ta] AS description,
-        d.[anh_dai_dien] AS imageUrl,
-        d.[dien_thoai] AS phone,
-        d.[website] AS website,
-        ISNULL(d.[diem_trung_binh], 0) AS rating,
-        ISNULL(d.[tong_danh_gia], 0) AS totalReviews,
-        d.[vi_do] AS latitude,
-        d.[kinh_do] AS longitude,
-        CAST(ISNULL(d.[noi_bat], 0) AS bit) AS featured,
-        CASE
-          WHEN p.[gia_trung_binh] IS NULL THEN NULL
-          ELSE CONCAT(FORMAT(p.[gia_trung_binh], 'N0'), N' VND')
-        END AS priceLabel,
-        p.[gia_trung_binh] AS avgPriceVnd,
-        d.[trang_thai] AS status
-      FROM dbo.DiaDiem d
-      INNER JOIN dbo.DanhMuc c ON c.[danh_muc_id] = d.[danh_muc_id]
-      LEFT JOIN dbo.ThongTinGia p ON p.[dia_diem_id] = d.[dia_diem_id] AND p.[phan_khuc_gia] = N'standard'
-      WHERE d.[hoat_dong] = 1
-        AND d.[trang_thai] = N'approved'
-        AND (@category IS NULL OR c.[ma_danh_muc] = @category)
-        AND (
-          @search IS NULL OR
-          d.[ten_dia_diem] LIKE @search OR
-          d.[dia_chi] LIKE @search OR
-          c.[ten_danh_muc] LIKE @search
-        )
-      ORDER BY d.[noi_bat] DESC, d.[diem_trung_binh] DESC, d.[tong_danh_gia] DESC;
-    `);
-
-    return result.recordset;
+    try {
+      const Location = await getLocationModel();
+      
+      const query: Record<string, unknown> = {};
+      
+      if (filters.category) {
+        query.categoryCode = filters.category;
+      }
+      
+      if (filters.search) {
+        query.$or = [
+          { name: { $regex: filters.search, $options: "i" } },
+          { address: { $regex: filters.search, $options: "i" } },
+          { categoryName: { $regex: filters.search, $options: "i" } },
+          { description: { $regex: filters.search, $options: "i" } }
+        ];
+      }
+      
+      const locations = await Location.find(query)
+        .sort({ featured: -1, rating: -1, totalReviews: -1 })
+        .limit(filters.limit || 1000)
+        .lean();
+      
+      return locations as LocationRecord[];
+    } catch (error) {
+      console.error("MongoDB query failed:", error);
+      return this.filterMock(filters);
+    }
   }
 
   private async queryLocationsUnderBudget(
@@ -202,56 +218,32 @@ export class LocationService {
     limit: number,
     preferredArea?: AreaPreference | null
   ): Promise<LocationRecord[]> {
-    const pool = await getDbPool();
-    const request = pool.request();
-    request.input("limit", sql.Int, Math.min(Math.max(limit * 20, 60), 500));
-    request.input("category", sql.NVarChar(50), categoryCode);
-    request.input("maxPrice", sql.Decimal(18, 2), maxPriceVnd);
-
-    const result = await request.query<LocationRecord>(`
-      SELECT TOP (@limit)
-        d.[dia_diem_id] AS id,
-        d.[ten_dia_diem] AS name,
-        c.[ma_danh_muc] AS categoryCode,
-        c.[ten_danh_muc] AS categoryName,
-        d.[dia_chi] AS address,
-        d.[quan_huyen] AS district,
-        d.[mo_ta] AS description,
-        d.[anh_dai_dien] AS imageUrl,
-        d.[dien_thoai] AS phone,
-        d.[website] AS website,
-        ISNULL(d.[diem_trung_binh], 0) AS rating,
-        ISNULL(d.[tong_danh_gia], 0) AS totalReviews,
-        d.[vi_do] AS latitude,
-        d.[kinh_do] AS longitude,
-        CAST(ISNULL(d.[noi_bat], 0) AS bit) AS featured,
-        CASE
-          WHEN p.[gia_trung_binh] IS NULL THEN NULL
-          ELSE CONCAT(FORMAT(p.[gia_trung_binh], 'N0'), N' VND')
-        END AS priceLabel,
-        p.[gia_trung_binh] AS avgPriceVnd,
-        d.[trang_thai] AS status
-      FROM dbo.DiaDiem d
-      INNER JOIN dbo.DanhMuc c ON c.[danh_muc_id] = d.[danh_muc_id]
-      INNER JOIN dbo.ThongTinGia p ON p.[dia_diem_id] = d.[dia_diem_id]
-      WHERE d.[hoat_dong] = 1
-        AND d.[trang_thai] = N'approved'
-        AND c.[ma_danh_muc] = @category
-        AND p.[gia_trung_binh] IS NOT NULL
-        AND p.[gia_trung_binh] <= @maxPrice
-      ORDER BY d.[diem_trung_binh] DESC, d.[tong_danh_gia] DESC;
-    `);
-
-    return result.recordset
-      .sort((a, b) => {
-        const areaDiff = this.computeAreaScore(b.address, preferredArea) - this.computeAreaScore(a.address, preferredArea);
-        if (areaDiff !== 0) {
-          return areaDiff;
-        }
-
-        return b.rating - a.rating || b.totalReviews - a.totalReviews;
+    try {
+      const Location = await getLocationModel();
+      
+      const locations = await Location.find({
+        categoryCode,
+        avgPriceVnd: { $exists: true, $ne: null, $lte: maxPriceVnd }
       })
-      .slice(0, limit);
+        .sort({ rating: -1, totalReviews: -1 })
+        .limit(Math.min(Math.max(limit * 20, 60), 500))
+        .lean();
+      
+      return (locations as LocationRecord[])
+        .sort((a, b) => {
+          const areaDiff = 
+            this.computeAreaScore(b.address, preferredArea) - 
+            this.computeAreaScore(a.address, preferredArea);
+          if (areaDiff !== 0) {
+            return areaDiff;
+          }
+          return b.rating - a.rating || b.totalReviews - a.totalReviews;
+        })
+        .slice(0, limit);
+    } catch (error) {
+      console.error("MongoDB query failed:", error);
+      return this.filterLocationsUnderBudgetMock(categoryCode, maxPriceVnd, limit, preferredArea);
+    }
   }
 
   private computeAreaScore(address: string | null, preferredArea?: AreaPreference | null): number {

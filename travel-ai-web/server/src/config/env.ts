@@ -20,7 +20,8 @@ function toAiProvider(value: string | undefined): "openai" | "gemini" {
 
 export const env = {
   port: Number(process.env.PORT ?? 3000),
-  useMockData: toBoolean(process.env.USE_MOCK_DATA, true),
+  useMockData: toBoolean(process.env.USE_MOCK_DATA, false),
+  mongoUri: process.env.MONGO_URI ?? "mongodb+srv://phananhtuan302_db_user:123z456z@dbtourist.vfkdtpu.mongodb.net/?appName=DBtourist",
   db: {
     server: process.env.DB_SERVER ?? "localhost",
     port: Number(process.env.DB_PORT ?? 1433),

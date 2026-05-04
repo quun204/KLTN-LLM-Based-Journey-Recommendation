@@ -16,6 +16,9 @@ export interface LocationItem {
   featured: boolean;
   priceLabel: string | null;
   status: string;
+  // optional itinerary metadata when returned from /api/itinerary
+  itineraryStart?: string | null;
+  itineraryEnd?: string | null;
 }
 
 export interface ChatMessage {

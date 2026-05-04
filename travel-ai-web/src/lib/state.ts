@@ -7,11 +7,44 @@ export interface AppState {
 
 const FLASH_KEY = "flash_message";
 const FAVORITE_KEY = "favorite_location_ids";
+const AUTH_COOKIE_KEY = "travel_ai_auth";
+const AUTH_STORAGE_KEY = "travel_ai_auth";
+const AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 
 const state: AppState = {
   user: null,
-  token: localStorage.getItem("token")
+  token: null
 };
+
+function writeAuthCookie(value: string): void {
+  document.cookie = `${AUTH_COOKIE_KEY}=${value}; path=/; max-age=${AUTH_COOKIE_MAX_AGE}; samesite=lax`;
+}
+
+function readAuthCookie(): string | null {
+  const prefix = `${AUTH_COOKIE_KEY}=`;
+  const parts = document.cookie.split("; ");
+  const match = parts.find((part) => part.startsWith(prefix));
+  if (!match) {
+    return null;
+  }
+
+  return match.slice(prefix.length);
+}
+
+function clearAuthCookie(): void {
+  document.cookie = `${AUTH_COOKIE_KEY}=; path=/; max-age=0; samesite=lax`;
+}
+
+function persistAuth(): void {
+  if (!state.user || !state.token) {
+    return;
+  }
+
+  const payload = JSON.stringify({ user: state.user, token: state.token });
+  const encoded = encodeURIComponent(payload);
+  localStorage.setItem(AUTH_STORAGE_KEY, encoded);
+  writeAuthCookie(encoded);
+}
 
 export function getState(): Readonly<AppState> {
   return state;
@@ -20,26 +53,40 @@ export function getState(): Readonly<AppState> {
 export function setAuth(user: AuthUser, token: string): void {
   state.user = user;
   state.token = token;
-  localStorage.setItem("token", token);
-  localStorage.setItem("user", JSON.stringify(user));
+  persistAuth();
 }
 
 export function clearAuth(): void {
   state.user = null;
   state.token = null;
-  localStorage.removeItem("token");
-  localStorage.removeItem("user");
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+  clearAuthCookie();
 }
 
 export function loadStoredUser(): void {
-  const raw = localStorage.getItem("user");
-  if (raw) {
-    try {
-      state.user = JSON.parse(raw) as AuthUser;
-    } catch {
-      clearAuth();
-    }
+  const raw = readAuthCookie() ?? localStorage.getItem(AUTH_STORAGE_KEY);
+  if (!raw) {
+    state.user = null;
+    state.token = null;
+    return;
   }
+
+  try {
+    const parsed = JSON.parse(decodeURIComponent(raw)) as AppState;
+    if (parsed.user && parsed.token) {
+      state.user = parsed.user;
+      state.token = parsed.token;
+      persistAuth();
+      return;
+    }
+  } catch {
+    // ignore corrupted auth payload
+  }
+
+  state.user = null;
+  state.token = null;
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+  clearAuthCookie();
 }
 
 export function setFlashMessage(message: string): void {

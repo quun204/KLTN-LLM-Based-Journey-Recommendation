@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatResponse, ItineraryResponse, LocationItem } from "../types";
+import { getState } from "./state";
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -11,7 +12,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 function authHeader(): HeadersInit {
-  const token = localStorage.getItem("token");
+  const token = getState().token;
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -54,12 +55,115 @@ export async function apiGetItinerary(): Promise<LocationItem[]> {
   return result.items;
 }
 
-export async function apiAddItineraryItem(locationId: number): Promise<LocationItem[]> {
+export async function apiFetchFeaturedItineraries(): Promise<any[]> {
+  const result = await parseResponse<{ success: boolean; data: any[]; count: number }>(
+    await fetch(`/api/itinerary/featured`)
+  );
+  return result.data;
+}
+
+export async function apiFetchFeaturedItineraryById(id: string | number): Promise<any> {
+  const result = await parseResponse<{ success: boolean; data: any }>(
+    await fetch(`/api/itinerary/featured/${id}`)
+  );
+  return result.data;
+}
+
+export interface FavoriteLocationRecord {
+  userId: number;
+  username: string;
+  locationId: number;
+  location: LocationItem;
+  savedAt: string;
+}
+
+export interface PersonalItineraryRecord {
+  _id: string;
+  itinerary_id?: number;
+  title: string;
+  description?: string;
+  items: any[];
+  totalDuration?: string;
+  tenNguoiDung?: string;
+  createdAt?: string;
+}
+
+export async function apiGetFavoriteLocations(): Promise<FavoriteLocationRecord[]> {
+  const result = await parseResponse<{ success: boolean; data: FavoriteLocationRecord[]; count: number }>(
+    await fetch("/api/favorites", { headers: authHeader() })
+  );
+  return result.data;
+}
+
+export async function apiSaveFavoriteLocation(location: LocationItem): Promise<FavoriteLocationRecord> {
+  const result = await parseResponse<{ success: boolean; data: FavoriteLocationRecord }>(
+    await fetch("/api/favorites", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify({ location })
+    })
+  );
+  return result.data;
+}
+
+export async function apiRemoveFavoriteLocation(locationId: number): Promise<void> {
+  await parseResponse<{ success: boolean }>(
+    await fetch("/api/favorites", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify({ locationId })
+    })
+  );
+}
+
+export async function apiGetMyItineraries(): Promise<PersonalItineraryRecord[]> {
+  const result = await parseResponse<{ success: boolean; data: PersonalItineraryRecord[]; count: number }>(
+    await fetch("/api/itinerary/mine", { headers: authHeader() })
+  );
+  return result.data;
+}
+
+export async function apiCreatePersonalItinerary(data: {
+  title?: string;
+  items: Array<{ locationId: number; startTime: string; endTime: string }>;
+}): Promise<PersonalItineraryRecord> {
+  const result = await parseResponse<{ success: boolean; data: PersonalItineraryRecord }>(
+    await fetch("/api/itinerary/personal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify(data)
+    })
+  );
+  return result.data;
+}
+
+export async function apiDeletePersonalItinerary(id: string | number): Promise<void> {
+  await parseResponse<{ success: boolean }>(
+    await fetch(`/api/itinerary/personal/${id}`, {
+      method: "DELETE",
+      headers: authHeader()
+    })
+  );
+}
+
+export async function apiSaveUserPreferences(answers: Record<string, unknown>): Promise<{ success: boolean }> {
+  return parseResponse<{ success: boolean }>(
+    await fetch(`/api/user/preferences`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeader() },
+      body: JSON.stringify(answers)
+    })
+  );
+}
+export async function apiAddItineraryItem(locationId: number, opts?: { startTime?: string; endTime?: string }): Promise<LocationItem[]> {
+  const payload: any = { locationId };
+  if (opts?.startTime) payload.startTime = opts.startTime;
+  if (opts?.endTime) payload.endTime = opts.endTime;
   const result = await parseResponse<ItineraryResponse>(
     await fetch("/api/itinerary/items", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeader() },
-      body: JSON.stringify({ locationId })
+      body: JSON.stringify(payload)
     })
   );
   return result.items;

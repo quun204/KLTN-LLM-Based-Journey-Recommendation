@@ -1,4 +1,4 @@
-import { apiAddItineraryItem, apiGetItinerary, apiRemoveItineraryItem, fetchLocations, sendChatMessage } from "../lib/api";
+import { apiFetchFeaturedItineraries, apiGetFavoriteLocations, apiRemoveFavoriteLocation, apiSaveFavoriteLocation, fetchLocations, sendChatMessage } from "../lib/api";
 import { navigate } from "../lib/router";
 import { consumeFlashMessage, getFavoriteLocationIds, getState, toggleFavoriteLocationId } from "../lib/state";
 import type { ChatMessage, LocationItem } from "../types";
@@ -56,7 +56,10 @@ function cardHtml(loc: LocationItem, selected: boolean, favorite: boolean): stri
     </article>`;
 }
 
-export async function renderHomePage(container: HTMLElement): Promise<void> {
+export async function renderHomePage(
+  container: HTMLElement,
+  options?: { scrollToSection?: "chat" | "locations" }
+): Promise<void> {
   const chatMessages: ChatMessage[] = [
     {
       role: "assistant",
@@ -68,8 +71,15 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
   let currentPage = 1;
   let totalPages = 1;
   let allLocations: LocationItem[] = [];
-  let itineraryItems: LocationItem[] = [];
+  let savedFavorites: any[] = [];
   let favoriteIds = getFavoriteLocationIds();
+  
+  // Itinerary pagination state
+  let allItineraries: any[] = [];
+  let currentItineraryPage = 1;
+  let totalItineraryPages = 1;
+  const ITINERARY_PAGE_SIZE = 6;
+  
   const flashMessage = consumeFlashMessage();
 
   container.innerHTML = `
@@ -107,11 +117,7 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
         </div>
 
         <div class="hero-search-wrap">
-          <form class="search-bar" id="search-bar">
-            <div class="search-bar__prefix">Khám phá</div>
-            <input id="search-q" type="text" placeholder="Bạn muốn đi đâu hoặc tìm gì ở Gò Vấp?" class="search-bar__input" />
-            <button class="btn btn-primary" type="submit">Bắt đầu khám phá</button>
-          </form>
+         
           <div class="hero__cta">
             <button class="btn btn-outline-light btn-lg" id="hero-explore">Xem điểm hot ngay</button>
             <button class="btn btn-white btn-lg" id="hero-chat">Nhận tư vấn AI miễn phí</button>
@@ -149,12 +155,12 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
           <div class="tour-spotlight__intro">
             <span class="tour-spotlight__eyebrow">Tour ưa thích</span>
             <h3>Các tour được hành khách chọn nhiều nhất</h3>
-            <p>Khu vực này sẽ hiển thị các lộ trình nổi bật từ dữ liệu yêu thích trong hệ thống.</p>
+            <p>Những lộ trình được xây dựng kỹ lưỡng cho từng loại du lịch</p>
           </div>
-          <div class="tour-spotlight__empty">
-            <strong>Chưa có dữ liệu lộ trình yêu thích</strong>
-            <p>Tạm thời đang để trống, bạn cập nhật DB xong mình sẽ nối dữ liệu và hiển thị tự động.</p>
+          <div class="tour-spotlight__grid" id="tour-spotlight-grid">
+            <p class="tour-spotlight__loading">Đang tải lộ trình...</p>
           </div>
+          <nav class="pager" id="itinerary-pager" aria-label="Phân trang lộ trình"></nav>
         </section>
       </div>
     </section>
@@ -173,19 +179,18 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
                </button>`
           ).join("")}
         </div>
-        <div class="itinerary-box" id="itinerary-box" hidden>
-          <div class="itinerary-head">
-            <h3>Hành trình của bạn</h3>
-            <small id="itinerary-count">0 mục</small>
-          </div>
-          <div class="itinerary-list" id="itinerary-list"></div>
-        </div>
       </div>
     </section>
 
     <!-- ====== MAIN GRID ====== -->
     <section class="section" id="locations-section">
       <div class="shell">
+       <form class="search-bar" id="search-bar">
+            <div class="search-bar__prefix">Khám phá</div>
+            <input id="search-q" type="text" placeholder="Bạn muốn đi đâu hoặc tìm gì ở Gò Vấp?" class="search-bar__input" />
+            <button class="btn btn-primary" type="submit">Bắt đầu khám phá</button>
+          </form>
+          </br>
         <div class="section-head">
           <h2 class="section__title" id="locs-title">Địa điểm nổi bật</h2>
           <span class="section-count" id="locs-count">Đang tải…</span>
@@ -293,9 +298,8 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
   const chatSuggestions = container.querySelector<HTMLDivElement>("#chat-suggestions")!;
   const chatQ = container.querySelector<HTMLTextAreaElement>("#chat-q")!;
   const searchQ = container.querySelector<HTMLInputElement>("#search-q")!;
-  const itineraryBox = container.querySelector<HTMLDivElement>("#itinerary-box")!;
-  const itineraryList = container.querySelector<HTMLDivElement>("#itinerary-list")!;
-  const itineraryCount = container.querySelector<HTMLElement>("#itinerary-count")!;
+  const tourSpotlightGrid = container.querySelector<HTMLDivElement>("#tour-spotlight-grid")!;
+  const itineraryPager = container.querySelector<HTMLElement>("#itinerary-pager")!;
 
   /* ---- render helpers ---- */
   function renderFeed(): void {
@@ -370,7 +374,7 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
     const start = (currentPage - 1) * PAGE_SIZE;
     const pageItems = allLocations.slice(start, start + PAGE_SIZE);
 
-    const selectedIds = new Set(itineraryItems.map((item) => item.id));
+    const selectedIds = new Set(savedFavorites.map((item) => item.locationId ?? item.location?.id));
     const favoriteSet = new Set(favoriteIds);
     locsGrid.innerHTML = pageItems
       .map((item) => cardHtml(item, selectedIds.has(item.id), favoriteSet.has(item.id)))
@@ -380,40 +384,118 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
     renderPager();
   }
 
-  function renderItinerary(): void {
-    const isLoggedIn = Boolean(getState().token);
-    if (!isLoggedIn) {
-      itineraryBox.hidden = true;
-      itineraryItems = [];
+  function itineraryCardHtml(itinerary: any): string {
+    const items = itinerary.items || [];
+    const itemsPreview = items.slice(0, 3).map((item: any) => {
+      const itemName = item.tên || item.name || "Không xác định";
+      const time = item.time || "";
+      return `<div class="itinerary-item-preview">
+        <span class="time">${time}</span>
+        <span class="name">${itemName}</span>
+      </div>`;
+    }).join("");
+    
+    const rating = itinerary.rating || 0;
+    const difficulty = itinerary.difficulty || "Trung bình";
+    const bestFor = itinerary.bestFor || "Tất cả";
+
+    return `
+      <article class="tour-card" data-id="${itinerary.itinerary_id ?? itinerary._id}">
+        <div class="tour-card__head">
+          <h4>${itinerary.title}</h4>
+          <span class="tour-card__rating">⭐ ${rating}/5</span>
+        </div>
+        <p class="tour-card__desc">${itinerary.description}</p>
+        <div class="tour-card__meta">
+          <span class="badge badge-difficulty">${difficulty}</span>
+          <span class="badge badge-for">${bestFor}</span>
+          <span class="badge badge-stops">📍 ${items.length} điểm</span>
+        </div>
+        <div class="tour-card__items">
+          ${itemsPreview}
+          ${items.length > 3 ? `<div class="itinerary-item-preview more">+${items.length - 3} điểm khác</div>` : ""}
+        </div>
+        <button class="btn btn-outline btn-sm" data-action="view-itinerary" data-id="${itinerary.itinerary_id ?? itinerary._id}">Xem chi tiết</button>
+      </article>
+    `;
+  }
+
+  async function loadFeaturedItineraries(): Promise<void> {
+    try {
+      tourSpotlightGrid.innerHTML = '<p class="tour-spotlight__loading">Đang tải lộ trình...</p>';
+      allItineraries = await apiFetchFeaturedItineraries();
+      
+      if (!allItineraries || allItineraries.length === 0) {
+        tourSpotlightGrid.innerHTML = '<p class="tour-spotlight__empty">Chưa có lộ trình nào</p>';
+        itineraryPager.innerHTML = '';
+        return;
+      }
+
+      totalItineraryPages = Math.max(1, Math.ceil(allItineraries.length / ITINERARY_PAGE_SIZE));
+      renderItineraryPage(1);
+    } catch (error) {
+      console.error("Error loading featured itineraries:", error);
+      tourSpotlightGrid.innerHTML = '<p class="tour-spotlight__error">Lỗi tải lộ trình</p>';
+    }
+  }
+
+  function renderItineraryPage(page: number): void {
+    if (allItineraries.length === 0) {
+      tourSpotlightGrid.innerHTML = '<p class="tour-spotlight__empty">Chưa có lộ trình nào</p>';
+      itineraryPager.innerHTML = '';
       return;
     }
 
-    itineraryBox.hidden = false;
-    itineraryCount.textContent = `${itineraryItems.length} mục`;
-    itineraryList.innerHTML = itineraryItems.length
-      ? itineraryItems
-          .map(
-            (item) =>
-              `<button class="itinerary-chip" data-action="remove-itinerary" data-id="${item.id}">${item.categoryName}: ${item.name}</button>`
-          )
-          .join("")
-      : "<p class=\"itinerary-empty\">Chưa có địa điểm nào trong hành trình.</p>";
+    currentItineraryPage = Math.min(Math.max(page, 1), totalItineraryPages);
+    const start = (currentItineraryPage - 1) * ITINERARY_PAGE_SIZE;
+    const pageItems = allItineraries.slice(start, start + ITINERARY_PAGE_SIZE);
+
+    tourSpotlightGrid.innerHTML = pageItems.map(itineraryCardHtml).join("");
+    
+    // Add click handlers
+    tourSpotlightGrid.querySelectorAll<HTMLButtonElement>("button[data-action='view-itinerary']").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        const id = btn.dataset.id;
+        navigate(`/itinerary/${id}`);
+      });
+    });
+
+    renderItineraryPager();
+  }
+
+  function renderItineraryPager(): void {
+    if (allItineraries.length === 0) {
+      itineraryPager.innerHTML = "";
+      return;
+    }
+
+    const model = getPaginationModel(currentItineraryPage, totalItineraryPages);
+    itineraryPager.innerHTML =
+      `<button class="pager__btn" data-page="${Math.max(1, currentItineraryPage - 1)}" ${currentItineraryPage === 1 ? "disabled" : ""}>‹</button>` +
+      model
+        .map((item) => {
+          if (item === "dots") {
+            return `<span class="pager__dots">…</span>`;
+          }
+
+          return `<button class="pager__btn${item === currentItineraryPage ? " pager__btn--active" : ""}" data-page="${item}">${item}</button>`;
+        })
+        .join("") +
+      `<button class="pager__btn" data-page="${Math.min(totalItineraryPages, currentItineraryPage + 1)}" ${currentItineraryPage === totalItineraryPages ? "disabled" : ""}>›</button>`;
   }
 
   async function loadItinerary(): Promise<void> {
     if (!getState().token) {
-      itineraryItems = [];
-      renderItinerary();
+      savedFavorites = [];
       return;
     }
 
     try {
-      itineraryItems = await apiGetItinerary();
-      renderItinerary();
+      savedFavorites = await apiGetFavoriteLocations();
       renderPage(currentPage);
     } catch {
-      itineraryItems = [];
-      renderItinerary();
+      savedFavorites = [];
     }
   }
 
@@ -455,6 +537,7 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
   renderFeed();
   await loadLocations();
   await loadItinerary();
+  await loadFeaturedItineraries();
 
   /* ---- categories ---- */
   container.querySelector("#cat-strip")?.addEventListener("click", async (e) => {
@@ -479,6 +562,16 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
   container.querySelector("#hero-chat")?.addEventListener("click", () => {
     document.querySelector("#chat-section")?.scrollIntoView({ behavior: "smooth" });
   });
+
+  if (options?.scrollToSection === "chat") {
+    requestAnimationFrame(() => {
+      document.querySelector("#chat-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  } else if (options?.scrollToSection === "locations") {
+    requestAnimationFrame(() => {
+      document.querySelector("#locations-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
 
   /* ---- location card click ---- */
   locsGrid.addEventListener("click", (e) => {
@@ -509,10 +602,18 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
         return;
       }
 
-      const exists = itineraryItems.some((item) => item.id === id);
+      const exists = savedFavorites.some((item) => Number(item.locationId ?? item.location?.id) === id);
       const run = async () => {
-        itineraryItems = exists ? await apiRemoveItineraryItem(id) : await apiAddItineraryItem(id);
-        renderItinerary();
+        if (exists) {
+          await apiRemoveFavoriteLocation(id);
+        } else {
+          const location = allLocations.find((item) => item.id === id);
+          if (!location) {
+            return;
+          }
+          await apiSaveFavoriteLocation(location);
+        }
+        savedFavorites = await apiGetFavoriteLocations();
         renderPage(currentPage);
       };
 
@@ -522,24 +623,6 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
 
     const card = (e.target as HTMLElement).closest<HTMLElement>(".loc-card");
     if (card) navigate(`/location/${card.dataset.id}`);
-  });
-
-  itineraryList.addEventListener("click", (e) => {
-    const chip = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-action='remove-itinerary']");
-    if (!chip) {
-      return;
-    }
-
-    const id = Number(chip.dataset.id);
-    if (!Number.isFinite(id)) {
-      return;
-    }
-
-    void (async () => {
-      itineraryItems = await apiRemoveItineraryItem(id);
-      renderItinerary();
-      renderPage(currentPage);
-    })();
   });
 
   locsPager.addEventListener("click", (e) => {
@@ -555,6 +638,21 @@ export async function renderHomePage(container: HTMLElement): Promise<void> {
 
     renderPage(page);
     document.querySelector("#locations-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  itineraryPager.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-page]");
+    if (!btn || btn.disabled) {
+      return;
+    }
+
+    const page = Number(btn.dataset.page);
+    if (!Number.isFinite(page)) {
+      return;
+    }
+
+    renderItineraryPage(page);
+    document.querySelector("#tour-spotlight")?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
   /* ---- chat ---- */

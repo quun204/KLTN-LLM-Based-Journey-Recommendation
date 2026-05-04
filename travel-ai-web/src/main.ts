@@ -8,13 +8,15 @@ import { renderLoginPage } from "./pages/login";
 import { renderRegisterPage } from "./pages/register";
 import { renderNotFoundPage } from "./pages/not-found";
 import { renderItineraryPage } from "./pages/itinerary";
+import { renderItineraryDetailPage } from "./pages/itinerary-detail";
 import { renderLocationDetailPage } from "./pages/location-detail";
 import { renderAboutPage } from "./pages/about";
+import { renderUserQuestionsPage } from "./pages/user-questions";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("No #app element found.");
 
-// Restore session from localStorage
+// Initialize auth state (in-memory only)
 loadStoredUser();
 
 // Render persistent navbar
@@ -37,12 +39,24 @@ route("/explore", () => {
   void renderHomePage(app);
 });
 
+route("/chat", () => {
+  void renderHomePage(app, { scrollToSection: "chat" });
+});
+
 route("/itinerary", () => {
   void renderItineraryPage(app);
 });
 
+route("/itinerary/", () => {
+  void renderItineraryDetailPage(app);
+});
+
 route("/about", () => {
   renderAboutPage(app);
+});
+
+route("/user-questions", () => {
+  renderUserQuestionsPage(app);
 });
 
 route("/location/", () => {
