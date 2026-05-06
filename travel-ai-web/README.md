@@ -76,3 +76,5 @@ Khi có thư mục `dist`, backend sẽ tự phục vụ frontend build sẵn.
 - Lưu lịch sử chat vào `CuocTroChuyen` và `TinNhanTroChuyen`
 - Tạo trang chi tiết địa điểm, yêu thích và lịch trình
 - Gợi ý cá nhân hóa theo `SoThichNguoiDung`
+
+Nguyễn Đức Quân - Phan Anh Tuấn
